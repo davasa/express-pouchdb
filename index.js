@@ -118,14 +118,14 @@ app.post('/_replicate', function (req, res, next) {
 
   var startDate = new Date();
   Pouch.replicate(source, target, opts).then(function (response) {
-    
+
     var historyObj = extend(true, {
       start_time: startDate.toJSON(),
       end_time: new Date().toJSON(),
     }, response);
-    
+
     var currentHistories = [];
-    
+
     if (!/^https?:\/\//.test(source)) {
       histories[source] = histories[source] || [];
       currentHistories.push(histories[source]);
@@ -135,16 +135,16 @@ app.post('/_replicate', function (req, res, next) {
       histories[target] = histories[target] || [];
       currentHistories.push(histories[target]);
     }
-    
+
     currentHistories.forEach(function (history) {
       // CouchDB caps history at 50 according to
       // http://guide.couchdb.org/draft/replication.html
       history.push(historyObj);
       if (history.length > 50) {
         history.splice(0, 1); // TODO: this is slow, use a stack instead
-      }      
+      }
     });
-    
+
     response.history = histories[source] || histories[target] || [];
     res.send(200, response);
   }, function (err) {
@@ -398,6 +398,31 @@ app.put('/:db/:id/:attachment(*)', function (req, res, next) {
   });
 });
 
+// Retrieve a design document attachment
+app.get('/:db/_design/:id/:attachment(*)', function (req, res, next) {
+
+  console.log('design document attachment ' + JSON.stringify(req.params));
+
+  var name = '_design/' + req.params.id
+    , attachment = req.params.attachment;
+
+  req.db.get(name, req.query, function (err, info) {
+    if (err) return res.send(404, err);
+
+    if (!info._attachments || !info._attachments[attachment]) {
+      return res.send(404, {status:404, error:'not_found', reason:'missing'});
+    };
+
+    var type = info._attachments[attachment].content_type;
+
+    req.db.getAttachment(name, attachment, function (err, response) {
+      if (err) return res.send(409, err);
+      res.set('Content-Type', type);
+      res.send(200, response);
+    });
+  });
+});
+
 // Retrieve a document attachment
 app.get('/:db/:id/:attachment(*)', function (req, res, next) {
 
@@ -417,12 +442,12 @@ app.get('/:db/:id/:attachment(*)', function (req, res, next) {
     };
 
     var type = info._attachments[attachment].content_type;
- 
+
     req.db.getAttachment(name, attachment, function (err, response) {
       if (err) return res.send(409, err);
       res.set('Content-Type', type);
       res.send(200, response);
-    });    
+    });
   });
 });
 
@@ -444,6 +469,11 @@ app.delete('/:db/:id/:attachment(*)', function (req, res, next) {
   });
 });
 
+// _security
+app.put('/:db/_security', function(req, res, next) {
+  res.send(201, 'not implemented');
+});
+
 // Create or update document that has an ID
 app.put('/:db/:id(*)', function (req, res, next) {
   req.body._id = req.body._id || req.query.id;
@@ -453,8 +483,6 @@ app.put('/:db/:id(*)', function (req, res, next) {
       : null;
   }
   req.db.put(req.body, req.query, function (err, response) {
-    console.log('hey heres an error');
-    console.log(err);
     if (err) return res.send(500, err);
     var loc = req.protocol
       + '://'
