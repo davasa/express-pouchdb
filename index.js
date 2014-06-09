@@ -1,20 +1,27 @@
 
-var express   = require('express')
-  , rawBody   = require('raw-body')
-  , fs        = require('fs')
-  , path      = require('path')
-  , extend    = require('extend')
-  , pkg       = require('./package.json')
-  , dbs       = {}
-  , uuids     = require('./uuids')
-  , histories = {}
-  , app       = express();
+var express    = require('express')
+  , rawBody    = require('raw-body')
+  , fs         = require('fs')
+  , path       = require('path')
+  , extend     = require('extend')
+  , pkg        = require('./package.json')
+  , dbs        = {}
+  , uuids      = require('./uuids')
+  , histories  = {}
+  , app        = express()
+  , rewrite    = require('./rewrite')
+  , qs         = require('querystring');
 
 var Pouch;
 module.exports = function(PouchToUse) {
   Pouch = PouchToUse;
   require('pouchdb-all-dbs')(Pouch);
   return app;
+};
+
+var userCtx = {
+  name: null,
+  roles: []
 };
 
 function isPouchError(obj) {
@@ -54,6 +61,7 @@ app.use(function (req, res, next) {
     next()
   })
 });
+
 app.use(function (req, res, next) {
   var _res = res;
   var send = res.send;
@@ -73,6 +81,10 @@ app.use(function (req, res, next) {
   next();
 });
 
+app.use(function (req, res, next) {
+  req.userCtx = userCtx;
+  next();
+});
 
 // Root route, return welcome message
 app.get('/', function (req, res, next) {
@@ -82,8 +94,72 @@ app.get('/', function (req, res, next) {
   });
 });
 
+// Query design document rewrite handler
+app.all('/:db/_design/:id/_rewrite(*)', function (req, res, next) {
+  var db = new Pouch(req.params.db);
+  var ddoc = '_design/' + req.params.id;
+  var base = '/' + req.params.db + '/' + ddoc + '/';
+  db.get(ddoc, function (err, doc) {
+    if (err) return res.send(404, err);
+    var rewrites = [];
+    for (var i = 0; i < doc.rewrites.length; i++) {
+      if ((!doc.rewrites[i].method) || (doc.rewrites[i].method == req.method)) {
+        rewrites.push(doc.rewrites[i]);
+      }
+    }
+    var resolved = rewrite(base, req.params[1], rewrites);
+    console.log(resolved);
+    if (resolved) {
+      req.url = resolved.url;
+      if (resolved.query) {
+        console.log(req.query);
+        req.query = resolved.query;        
+      }
+      next();
+    } else {
+      return res.send(404, 'not found');
+    }
+  });
+});
+
+app.post('/_session', function (req, res, next) {
+  var body = qs.parse(req.rawBody);
+  var udb = new Pouch('_users');
+  udb.get('org.couchdb.user:' + body.name, function (err, doc) {
+    if (err) return res.send(404, err);
+    userCtx = {
+      name: doc.name,
+      roles: doc.roles
+    };
+    res.send({"ok": true,"userCtx": userCtx, "info":{}});
+  });
+});
+
+app.delete('/_session', function (req, res, next) {
+  userCtx = {};
+  res.send(200, {"ok": true});
+});
+
 app.get('/_session', function (req, res, next) {
-  res.send({"ok":true,"userCtx":{"name":null,"roles":["_admin"]},"info":{}});
+  if (req.query.basic) {
+    var header=req.headers['authorization']||'',
+      token=header.split(/\s+/).pop()||'',
+      auth=new Buffer(token, 'base64').toString(),
+      parts=auth.split(/:/),
+      username=parts[0],
+      password=parts[1];
+    var udb = new Pouch('_users');
+    udb.get('org.couchdb.user:' + username, function (err, doc) {
+      if (err) return res.send(401, err);
+      userCtx = {
+        name: doc.name,
+        roles: doc.roles
+      };
+      res.send({"ok": true,"userCtx": userCtx, "info":{}});
+    });
+  } else {
+    res.send({"ok": true,"userCtx": userCtx, "info":{}});
+  }
 });
 
 app.get('/_utils', function (req, res, next) {
@@ -347,6 +423,38 @@ app.get('/:db/_design/:id/_info', function (req, res, next) {
   });
 });
 
+// Query design document list handler; Not implemented.
+app.get('/:db/_design/:id/_list/:list/:view', function (req, res, next) {
+  var db = new Pouch(req.params.db);
+  var ddoc = '_design/' + req.params.id;
+  db.get(ddoc, function (err, doc) {
+    if (err) return res.send(404, err);
+    var query = req.params.id + '/' + req.params.view;
+    req.db.query(query, req.query, function (err, response) {
+      if (err) return res.send(404, err);
+      var ri = 0;
+      var getRow = function () {
+        if (ri < response.rows.length) {
+          ri += 1;
+          return response.rows[ri-1];
+        } else {
+          return false;
+        }
+      };
+      var retVal = '';
+      var send = function (fragment) {
+        retVal += fragment;
+      };
+      eval("var list = " + doc.lists[req.params.list]);
+      list({
+        total_rows: response.total_rows,
+        offset: response.offset
+      }, req);
+      res.send(200, retVal);
+    });
+  });
+});
+
 // Query a document view
 app.get('/:db/_design/:id/_view/:view', function (req, res, next) {
   var query = req.params.id + '/' + req.params.view;
@@ -356,23 +464,28 @@ app.get('/:db/_design/:id/_view/:view', function (req, res, next) {
   });
 });
 
-// Query design document list handler; Not implemented.
-app.get('/:db/_design/:id/_list(*)', function (req, res, next) {
-  res.send(501);
+// Query design document show handler.
+app.get('/:db/_design/:id/_show/:show', function (req, res, next) {
+  req.url += '/whatever';
+  next();
 });
 
-// Query design document show handler; Not implemented.
-app.get('/:db/_design/:id/_show(*)', function (req, res, next) {
-  res.send(501);
+app.get('/:db/_design/:id/_show/:show/:doc', function (req, res, next) {
+  var db = new Pouch(req.params.db);
+  var ddoc = '_design/' + req.params.id;
+  db.get(ddoc, function (err, doc) {
+    if (err) return res.send(404, err);
+    eval('var show =' + doc.shows[req.params.show]);
+    var ro = show(doc, req);
+    for (var header in ro.headers) {
+      res.header(header, ro.headers[header]);
+    }
+    res.send(ro.body);
+  });
 });
 
 // Query design document update handler; Not implemented.
 app.get('/:db/_design/:id/_update(*)', function (req, res, next) {
-  res.send(501);
-});
-
-// Query design document rewrite handler; Not implemented.
-app.get('/:db/_design/:id/_rewrite(*)', function (req, res, next) {
   res.send(501);
 });
 
@@ -383,9 +496,7 @@ app.put('/:db/:id/:attachment(*)', function (req, res, next) {
   if (req.params.id === '_design' || req.params.id === '_local') {
     return next();
   }
-  console.log('raw body');
-  console.log(req.rawBody);
-  console.log(JSON.stringify(req.rawBody));
+
   var name = req.params.id
     , attachment = req.params.attachment
     , rev = req.query.rev
@@ -400,8 +511,6 @@ app.put('/:db/:id/:attachment(*)', function (req, res, next) {
 
 // Retrieve a design document attachment
 app.get('/:db/_design/:id/:attachment(*)', function (req, res, next) {
-
-  console.log('design document attachment ' + JSON.stringify(req.params));
 
   var name = '_design/' + req.params.id
     , attachment = req.params.attachment;
