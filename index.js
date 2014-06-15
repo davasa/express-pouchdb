@@ -37,6 +37,9 @@ app.use(function (req, res, next) {
     , data = ''
     , prop;
 
+  // Normalize url
+  req.url = path.normalize(req.url);
+
   // Normalize query string parameters for direct passing
   // into Pouch queries.
   for (prop in req.query) {
@@ -108,12 +111,10 @@ app.all('/:db/_design/:id/_rewrite(*)', function (req, res, next) {
       }
     }
     var resolved = rewrite(base, req.params[1], rewrites);
-    console.log(resolved);
     if (resolved) {
       req.url = resolved.url;
       if (resolved.query) {
-        console.log(req.query);
-        req.query = resolved.query;        
+        req.query = resolved.query;
       }
       next();
     } else {
@@ -484,9 +485,30 @@ app.get('/:db/_design/:id/_show/:show/:doc', function (req, res, next) {
   });
 });
 
-// Query design document update handler; Not implemented.
-app.get('/:db/_design/:id/_update(*)', function (req, res, next) {
-  res.send(501);
+// Query design document update handler.
+app.all('/:db/_design/:id/_update/:handler/:docid', function (req, res, next) {
+  var db = new Pouch(req.params.db);
+  var ddoc = '_design/' + req.params.id;
+  db.get(ddoc, function (err, doc) {
+    if (err) return res.send(404, err);
+    var log = console.log;
+    eval('var update =' + doc.updates[req.params.handler]);
+    if (req.params.docid) {
+      req.body['_id'] = req.params.docid;
+    }
+    req.body = JSON.stringify(req.body);
+    var ro = update(JSON.parse(req.body), req);
+    if ((req.method == 'PUT') || (req.method == 'POST')) {
+      req.body = JSON.parse(req.body);
+      db.put(req.body, req.query, function (err, response) {
+        if (err) return res.send(500, err);
+        for (var header in ro[1].headers) {
+          res.header(header, ro[1].headers[header]);
+        }
+        res.send(ro[1]);
+      });
+    }
+  });
 });
 
 // Put a document attachment

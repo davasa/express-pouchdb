@@ -1,5 +1,3 @@
-"use strict";
-
 var url = require('url'),
   pathToRegexp = require('path-to-regexp');
 
@@ -17,11 +15,10 @@ function rewrite(base, input, rewrites) {
         toUrl = toUrl.substring(1);
       }
       toUrl = url.resolve(base, toUrl);
-      for (var i = 0; i < keys.length; i++) {
-        toUrl = toUrl.replace(':' + keys[i].name, result[i+1]);
+      for (var j = 0; j < keys.length; j++) {
+        toUrl = toUrl.replace(':' + keys[j].name, result[j+1]);
         for (var q in toQuery) {
-          console.log(toQuery, q);
-          toQuery[q] = JSON.parse(JSON.stringify(toQuery[q]).replace(':' + keys[i].name, result[i+1]));
+          toQuery[q] = JSON.parse(JSON.stringify(toQuery[q]).replace(':' + keys[j].name, result[j+1]));
         }
       }
       toUrl = toUrl.replace('*', result[result.length-1]);
